@@ -83,11 +83,10 @@ async def help_command(message: types.Message):
         "📝 **Як користуватись:**\n"
         "1. Натисни `/add`, щоб створити задачу.\n"
         "2. Введи текст і точний час у форматі `ДД.ММ.РРРР ГГ:ХХ` (за київським часом).\n"
-        "3. Обери періодичність (можна вказати навіть власний інтервал у днях!).\n"
+        "3. Обери періодичність (можна вказати власний інтервал у днях!).\n"
         "На будь-якому етапі створення можна натиснути кнопку **«❌ Скасувати»**."
     )
 
-# Кнопка скасування для клавіатур
 def get_cancel_keyboard():
     builder = InlineKeyboardBuilder()
     builder.button(text="❌ Скасувати", callback_data="cancel_action")
@@ -136,7 +135,6 @@ async def add_time(message: types.Message, state: FSMContext):
     builder.adjust(1)
     await message.answer("Обери частоту повторення:", reply_markup=builder.as_markup())
 
-# Якщо обрали власний інтервал у днях
 @dp.callback_query(ReminderStates.waiting_for_repeat, F.data == "rep_custom")
 async def ask_custom_days(callback: types.CallbackQuery, state: FSMContext):
     await state.set_state(ReminderStates.waiting_for_custom_days)
@@ -159,7 +157,6 @@ async def process_custom_days(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
     job_id = f"rem_{user_id}_{int(datetime.now().timestamp())}"
 
-    # Налаштування інтервалу в днях за допомогою APScheduler (interval в днях)
     scheduler.add_job(
         send_reminder, 
         "interval", 
@@ -182,7 +179,7 @@ async def process_custom_days(message: types.Message, state: FSMContext):
 @dp.callback_query(ReminderStates.waiting_for_repeat, F.data.startswith("rep_"))
 async def add_repeat_finish(callback: types.CallbackQuery, state: FSMContext):
     if callback.data == "rep_custom":
-        return  дней handled above
+        return
 
     data = await state.get_data()
     text = data["text"]
@@ -390,7 +387,6 @@ async def save_edit_time(message: types.Message, state: FSMContext):
         elif sched_type == "Щотижня":
             scheduler.add_job(send_reminder, "cron", day_of_week=new_time.strftime("%a").lower(), hour=new_time.hour, minute=new_time.minute, args=[job_id, user_id, text], id=job_id)
         elif "Кожні" in sched_type:
-            # Витягуємо кількість днів із рядка на кшталт "Кожні 3 дн."
             days_num = int(''.join(filter(str.isdigit, sched_type)))
             scheduler.add_job(send_reminder, "interval", days=days_num, start_date=new_time, args=[job_id, user_id, text], id=job_id)
 
