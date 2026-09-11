@@ -47,11 +47,11 @@ class ReminderStates(StatesGroup):
     waiting_for_text = State()
     waiting_for_time = State()
     waiting_for_repeat = State()
+    waiting_for_custom_days = State()
     editing_text = State()
     editing_time = State()
 
 async def send_reminder(job_id: str, chat_id: int, text: str):
-    """Надсилання нагадування з інтерактивними кнопками"""
     try:
         builder = InlineKeyboardBuilder()
         builder.button(text="✅ Виконано", callback_data=f"done_{job_id}")
@@ -70,7 +70,7 @@ async def send_reminder(job_id: str, chat_id: int, text: str):
 @dp.message(Command("start"))
 async def start_command(message: types.Message):
     await message.answer(
-        "Привіт! Я твій бот-нагадування з підтримкою київського часу та інтерактивних кнопок.\n\n"
+        "Привіт! Я твій вдосконалений бот-нагадування.\n\n"
         "📌 **Команди:**\n"
         "➕ /add — Створити нове нагадування\n"
         "📋 /list — Переглянути, редагувати або видалити нагадування\n"
@@ -83,20 +83,33 @@ async def help_command(message: types.Message):
         "📝 **Як користуватись:**\n"
         "1. Натисни `/add`, щоб створити задачу.\n"
         "2. Введи текст і точний час у форматі `ДД.ММ.РРРР ГГ:ХХ` (за київським часом).\n"
-        "3. Коли прийде нагадування, ти зможеш одразу натиснути «Виконано» або «Відкласти на 15 хв» прямо в повідомленні!"
+        "3. Обери періодичність (можна вказати навіть власний інтервал у днях!).\n"
+        "На будь-якому етапі створення можна натиснути кнопку **«❌ Скасувати»**."
     )
+
+# Кнопка скасування для клавіатур
+def get_cancel_keyboard():
+    builder = InlineKeyboardBuilder()
+    builder.button(text="❌ Скасувати", callback_data="cancel_action")
+    return builder.as_markup()
+
+@dp.callback_query(F.data == "cancel_action")
+async def cancel_action(callback: types.CallbackQuery, state: FSMContext):
+    await state.clear()
+    await callback.message.edit_text("❌ Дію скасовано.")
+    await callback.answer()
 
 # --- СТВОРЕННЯ НАГАДУВАННЯ ---
 @dp.message(Command("add"))
 async def add_start(message: types.Message, state: FSMContext):
     await state.set_state(ReminderStates.waiting_for_text)
-    await message.answer("Введи текст нагадування:")
+    await message.answer("Введи текст нагадування:", reply_markup=get_cancel_keyboard())
 
 @dp.message(ReminderStates.waiting_for_text)
 async def add_text(message: types.Message, state: FSMContext):
     await state.update_data(text=message.text)
     await state.set_state(ReminderStates.waiting_for_time)
-    await message.answer("Введи дату та час (за Києвом) у форматі:\n`ДД.ММ.РРРР ГГ:ХХ`\n(Наприклад: `20.09.2026 18:00`)")
+    await message.answer("Введи дату та час (за Києвом) у форматі:\n`ДД.ММ.РРРР ГГ:ХХ`\n(Наприклад: `20.09.2026 18:00`)", reply_markup=get_cancel_keyboard())
 
 @dp.message(ReminderStates.waiting_for_time)
 async def add_time(message: types.Message, state: FSMContext):
@@ -105,10 +118,10 @@ async def add_time(message: types.Message, state: FSMContext):
         target_time = KYIV_TZ.localize(naive_time)
         
         if target_time <= datetime.now(KYIV_TZ):
-            await message.answer("Цей час вже минув! Введи майбутню дату та час у форматі `ДД.ММ.РРРР ГГ:ХХ`:")
+            await message.answer("Цей час вже минув! Введи майбутню дату та час у форматі `ДД.ММ.РРРР ГГ:ХХ`:", reply_markup=get_cancel_keyboard())
             return
     except ValueError:
-        await message.answer("Неправильний формат! Використовуй строго `ДД.ММ.РРРР ГГ:ХХ`:")
+        await message.answer("Неправильний формат! Використовуй строго `ДД.ММ.РРРР ГГ:ХХ`:", reply_markup=get_cancel_keyboard())
         return
 
     await state.update_data(target_time=target_time)
@@ -118,11 +131,59 @@ async def add_time(message: types.Message, state: FSMContext):
     builder.button(text="Одноразово", callback_data="rep_once")
     builder.button(text="Щодня", callback_data="rep_daily")
     builder.button(text="Щотижня", callback_data="rep_weekly")
+    builder.button(text="Кожні N днів", callback_data="rep_custom")
+    builder.button(text="❌ Скасувати", callback_data="cancel_action")
     builder.adjust(1)
     await message.answer("Обери частоту повторення:", reply_markup=builder.as_markup())
 
+# Якщо обрали власний інтервал у днях
+@dp.callback_query(ReminderStates.waiting_for_repeat, F.data == "rep_custom")
+async def ask_custom_days(callback: types.CallbackQuery, state: FSMContext):
+    await state.set_state(ReminderStates.waiting_for_custom_days)
+    await callback.message.edit_text("Введи кількість днів інтервалу (ціле число, наприклад `3` для повторення кожні 3 дні):", reply_markup=get_cancel_keyboard())
+    await callback.answer()
+
+@dp.message(ReminderStates.waiting_for_custom_days)
+async def process_custom_days(message: types.Message, state: FSMContext):
+    try:
+        days = int(message.text.strip())
+        if days <= 0:
+            raise ValueError()
+    except ValueError:
+        await message.answer("Будь ласка, введи коректне ціле число (наприклад `2` або `5`):", reply_markup=get_cancel_keyboard())
+        return
+
+    data = await state.get_data()
+    text = data["text"]
+    target_time: datetime = data["target_time"]
+    user_id = message.from_user.id
+    job_id = f"rem_{user_id}_{int(datetime.now().timestamp())}"
+
+    # Налаштування інтервалу в днях за допомогою APScheduler (interval в днях)
+    scheduler.add_job(
+        send_reminder, 
+        "interval", 
+        days=days, 
+        start_date=target_time, 
+        args=[job_id, user_id, text], 
+        id=job_id
+    )
+    sched_text = f"Кожні {days} дн."
+
+    conn = sqlite3.connect('reminders.db')
+    cursor = conn.cursor()
+    cursor.execute("INSERT OR REPLACE INTO user_reminders VALUES (?, ?, ?, ?)", (job_id, user_id, text, sched_text))
+    conn.commit()
+    conn.close()
+
+    await state.clear()
+    await message.answer(f"✅ Нагадування створено!\n\n📌 Текст: {text}\n🕒 Перший запуск: {target_time.strftime('%d.%m.%Y %H:%M')}\n🔄 Повторення: {sched_text}")
+
 @dp.callback_query(ReminderStates.waiting_for_repeat, F.data.startswith("rep_"))
 async def add_repeat_finish(callback: types.CallbackQuery, state: FSMContext):
+    if callback.data == "rep_custom":
+        return  дней handled above
+
     data = await state.get_data()
     text = data["text"]
     target_time: datetime = data["target_time"]
@@ -150,12 +211,11 @@ async def add_repeat_finish(callback: types.CallbackQuery, state: FSMContext):
     await callback.message.edit_text(f"✅ Нагадування створено!\n\n📌 Текст: {text}\n🕒 Час: {target_time.strftime('%d.%m.%Y %H:%M')}\n🔄 Повторення: {sched_text}")
     await callback.answer()
 
-# --- КНОПКИ В СПОВІЩЕННЯХ (Виконано / Відкласти) ---
+# --- КНОПКИ В СПОВІЩЕННЯХ ---
 @dp.callback_query(F.data.startswith("done_"))
 async def btn_done(callback: types.CallbackQuery):
     job_id = callback.data.split("_", 1)[1]
     
-    # Перевіряємо, чи це одноразове нагадування. Якщо так — видаляємо з БД і планувальника.
     conn = sqlite3.connect('reminders.db')
     cursor = conn.cursor()
     cursor.execute("SELECT schedule_type FROM user_reminders WHERE id = ?", (job_id,))
@@ -186,7 +246,6 @@ async def btn_snooze(callback: types.CallbackQuery):
 
     if row:
         user_id, text, sched_type = row
-        # Переносимо час на 15 хвилин вперед від поточного моменту
         new_time = datetime.now(KYIV_TZ) + timedelta(minutes=15)
         
         if scheduler.get_job(job_id):
@@ -264,7 +323,7 @@ async def start_edit_text(callback: types.CallbackQuery, state: FSMContext):
     job_id = callback.data.split("_", 1)[1]
     await state.update_data(editing_job_id=job_id)
     await state.set_state(ReminderStates.editing_text)
-    await callback.message.answer("Введи новий текст для цього нагадування:")
+    await callback.message.answer("Введи новий текст для цього нагадування:", reply_markup=get_cancel_keyboard())
     await callback.answer()
 
 @dp.message(ReminderStates.editing_text)
@@ -294,7 +353,7 @@ async def start_edit_time(callback: types.CallbackQuery, state: FSMContext):
     job_id = callback.data.split("_", 1)[1]
     await state.update_data(editing_job_id=job_id)
     await state.set_state(ReminderStates.editing_time)
-    await callback.message.answer("Введи новий час у форматі `ДД.ММ.РРРР ГГ:ХХ`:")
+    await callback.message.answer("Введи новий час у форматі `ДД.ММ.РРРР ГГ:ХХ`:", reply_markup=get_cancel_keyboard())
     await callback.answer()
 
 @dp.message(ReminderStates.editing_time)
@@ -304,10 +363,10 @@ async def save_edit_time(message: types.Message, state: FSMContext):
         new_time = KYIV_TZ.localize(naive_time)
         
         if new_time <= datetime.now(KYIV_TZ):
-            await message.answer("Цей час вже минув! Введи майбутню дату та час у форматі `ДД.ММ.РРРР ГГ:ХХ`:")
+            await message.answer("Цей час вже минув! Введи майбутню дату та час у форматі `ДД.ММ.РРРР ГГ:ХХ`:", reply_markup=get_cancel_keyboard())
             return
     except ValueError:
-        await message.answer("Неправильний формат! Використовуй строго `ДД.ММ.РРРР ГГ:ХХ`:")
+        await message.answer("Неправильний формат! Використовуй строго `ДД.ММ.РРРР ГГ:ХХ`:", reply_markup=get_cancel_keyboard())
         return
 
     data = await state.get_data()
@@ -330,6 +389,10 @@ async def save_edit_time(message: types.Message, state: FSMContext):
             scheduler.add_job(send_reminder, "cron", hour=new_time.hour, minute=new_time.minute, args=[job_id, user_id, text], id=job_id)
         elif sched_type == "Щотижня":
             scheduler.add_job(send_reminder, "cron", day_of_week=new_time.strftime("%a").lower(), hour=new_time.hour, minute=new_time.minute, args=[job_id, user_id, text], id=job_id)
+        elif "Кожні" in sched_type:
+            # Витягуємо кількість днів із рядка на кшталт "Кожні 3 дн."
+            days_num = int(''.join(filter(str.isdigit, sched_type)))
+            scheduler.add_job(send_reminder, "interval", days=days_num, start_date=new_time, args=[job_id, user_id, text], id=job_id)
 
     await state.clear()
     await message.answer(f"✅ Час нагадування успішно змінено на {new_time.strftime('%d.%m.%Y %H:%M')}!")
