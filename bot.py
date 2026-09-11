@@ -106,7 +106,6 @@ async def cancel_action(callback: types.CallbackQuery, state: FSMContext):
     await callback.message.edit_text("❌ Дію скасовано.")
     await callback.answer()
 
-# Універсальна функція парсингу тексту та часу з довільного рядка
 async def parse_reminder_string(full_text: str):
     words = full_text.split()
     parsed_date = None
@@ -130,7 +129,6 @@ async def parse_reminder_string(full_text: str):
             
     return text_part, parsed_date
 
-# Ручний ввід через /add або вільне повідомлення
 @dp.message(Command("add"))
 async def add_command(message: types.Message, state: FSMContext):
     args = message.text.replace("/add", "", 1).strip()
@@ -166,12 +164,11 @@ async def show_repeat_options(message_or_callback, text, target_time):
     else:
         await message_or_callback.answer(text_content, parse_mode="Markdown", reply_markup=builder.as_markup())
 
-# Інтелектуальний обробник довільних повідомлень (якщо користувач не вводив команди)
 @dp.message(F.text & ~F.text.startswith("/"))
 async def smart_natural_input(message: types.Message, state: FSMContext):
     current_state = await state.get_state()
     if current_state is not None:
-        return  # Якщо зараз активний якийсь інший стейт (редагування тощо), не перебиваємо
+        return
 
     text_part, parsed_date = await parse_reminder_string(message.text)
     if parsed_date and text_part:
@@ -265,7 +262,6 @@ async def add_repeat_finish(callback: types.CallbackQuery, state: FSMContext):
     await callback.message.edit_text(f"✅ **Успішно створено!**\n\n📌 _{text}_\n🕒 {target_time.strftime('%d.%m.%Y о %H:%M')}\n🔄 {sched_text}", parse_mode="Markdown")
     await callback.answer()
 
-# --- КНОПКИ СПОВІЩЕНЬ ---
 @dp.callback_query(F.data.startswith("done_"))
 async def btn_done(callback: types.CallbackQuery):
     job_id = callback.data.split("_", 1)[1]
@@ -310,10 +306,7 @@ async def btn_snooze(callback: types.CallbackQuery):
         await callback.message.edit_text("⚠️ Задача вже не знайдена.")
     await callback.answer("Відкладено!")
 
-# --- СПИСОК ТА КЕРУВАННЯ ---
-@dp.message(Command("list"))
-async def list_reminders(message: types.Message):
-    user_id = message.from_user.id
+async def show_user_reminders_list(message: types.Message, user_id: int):
     conn = sqlite3.connect('reminders.db')
     cursor = conn.cursor()
     cursor.execute("SELECT id, text, schedule_type FROM user_reminders WHERE user_id = ?", (user_id,))
@@ -334,6 +327,10 @@ async def list_reminders(message: types.Message):
 
     builder.adjust(1)
     await message.answer(text_msg, parse_mode="Markdown", reply_markup=builder.as_markup())
+
+@dp.message(Command("list"))
+async def list_reminders(message: types.Message):
+    await show_user_reminders_list(message, message.from_user.id)
 
 @dp.callback_query(F.data.startswith("manage_"))
 async def manage_reminder(callback: types.CallbackQuery):
@@ -363,9 +360,9 @@ async def manage_reminder(callback: types.CallbackQuery):
 @dp.callback_query(F.data == "back_to_list")
 async def back_to_list(callback: types.CallbackQuery):
     await callback.message.delete()
-    message = callback.message
-    message.from_user = callback.from_user
-    await list_reminders(message)
+    user_id = callback.from_user.id
+    await show_user_reminders_list(callback.message, user_id)
+    await callback.answer()
 
 @dp.callback_query(F.data.startswith("edittext_"))
 async def start_edit_text(callback: types.CallbackQuery, state: FSMContext):
