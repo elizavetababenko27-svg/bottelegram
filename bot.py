@@ -4,9 +4,10 @@ import logging
 import sqlite3
 from datetime import datetime, timedelta
 from pytz import timezone
+import dateparser
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
-from aiogram.fsm.state import State, StatesGroup
+from aiogram.fsm.state import State,StatesGroup
 from aiogram.fsm.context import FSMContext
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -82,8 +83,8 @@ async def help_command(message: types.Message):
     await message.answer(
         "📝 **Як користуватись:**\n"
         "1. Натисни `/add`, щоб створити задачу.\n"
-        "2. Введи текст і точний час у форматі `ДД.ММ.РРРР ГГ:ХХ` (за київським часом).\n"
-        "3. Обери періодичність (можна вказати власний інтервал у днях!).\n"
+        "2. Введи текст і час у довільній формі (наприклад: `завтра о 15:30`, `через 2 години`, `у п'ятницю о 10:00` або класично `20.09.2026 18:00`).\n"
+        "3. Обери періодичність.\n"
         "На будь-якому етапі створення можна натиснути кнопку **«❌ Скасувати»**."
     )
 
@@ -108,21 +109,38 @@ async def add_start(message: types.Message, state: FSMContext):
 async def add_text(message: types.Message, state: FSMContext):
     await state.update_data(text=message.text)
     await state.set_state(ReminderStates.waiting_for_time)
-    await message.answer("Введи дату та час (за Києвом) у форматі:\n`ДД.ММ.РРРР ГГ:ХХ`\n(Наприклад: `20.09.2026 18:00`)", reply_markup=get_cancel_keyboard())
+    await message.answer(
+        "Введи дату та час. Можна писати природною мовою:\n"
+        "• `завтра о 15:30`\n"
+        "• `через 2 години`\n"
+        "• `у п'ятницю о 10:00`\n"
+        "• або традиційно: `20.09.2026 18:00`", 
+        reply_markup=get_cancel_keyboard()
+    )
 
 @dp.message(ReminderStates.waiting_for_time)
 async def add_time(message: types.Message, state: FSMContext):
-    try:
-        naive_time = datetime.strptime(message.text.strip(), "%d.%m.%Y %H:%M")
-        target_time = KYIV_TZ.localize(naive_time)
-        
-        if target_time <= datetime.now(KYIV_TZ):
-            await message.answer("Цей час вже минув! Введи майбутню дату та час у форматі `ДД.ММ.РРРР ГГ:ХХ`:", reply_markup=get_cancel_keyboard())
-            return
-    except ValueError:
-        await message.answer("Неправильний формат! Використовуй строго `ДД.ММ.РРРР ГГ:ХХ`:", reply_markup=get_cancel_keyboard())
+    user_input = message.text.strip()
+    
+    # Парсимо текст за допомогою dateparser з орієнтацією на київський час
+    parsed_date = dateparser.parse(
+        user_input,
+        languages=['uk', 'ru'],
+        settings={
+            'TIMEZONE': 'Europe/Kiev',
+            'RETURN_AS_TIMEZONE_AWARE': True,
+            'PREFER_DATES_FROM': 'future'
+        }
+    )
+
+    if not parsed_date or parsed_date <= datetime.now(KYIV_TZ):
+        await message.answer(
+            "Не вдалося розпізнати час або він вже минув! Спробуй написати інакше (наприклад: `завтра о 14:00` або `20.09.2026 18:00`):", 
+            reply_markup=get_cancel_keyboard()
+        )
         return
 
+    target_time = parsed_date
     await state.update_data(target_time=target_time)
     await state.set_state(ReminderStates.waiting_for_repeat)
 
@@ -133,7 +151,12 @@ async def add_time(message: types.Message, state: FSMContext):
     builder.button(text="Кожні N днів", callback_data="rep_custom")
     builder.button(text="❌ Скасувати", callback_data="cancel_action")
     builder.adjust(1)
-    await message.answer("Обери частоту повторення:", reply_markup=builder.as_markup())
+    
+    await message.answer(
+        f"⏳ Зрозуміла! Нагадування спрацює: **{target_time.strftime('%d.%m.%Y о %H:%M')}**\n\nОбери частоту повторення:", 
+        parse_mode="Markdown", 
+        reply_markup=builder.as_markup()
+    )
 
 @dp.callback_query(ReminderStates.waiting_for_repeat, F.data == "rep_custom")
 async def ask_custom_days(callback: types.CallbackQuery, state: FSMContext):
@@ -350,22 +373,27 @@ async def start_edit_time(callback: types.CallbackQuery, state: FSMContext):
     job_id = callback.data.split("_", 1)[1]
     await state.update_data(editing_job_id=job_id)
     await state.set_state(ReminderStates.editing_time)
-    await callback.message.answer("Введи новий час у форматі `ДД.ММ.РРРР ГГ:ХХ`:", reply_markup=get_cancel_keyboard())
+    await callback.message.answer("Введи новий час (можна природною мовою або форматом `ДД.ММ.РРРР ГГ:ХХ`):", reply_markup=get_cancel_keyboard())
     await callback.answer()
 
 @dp.message(ReminderStates.editing_time)
 async def save_edit_time(message: types.Message, state: FSMContext):
-    try:
-        naive_time = datetime.strptime(message.text.strip(), "%d.%m.%Y %H:%M")
-        new_time = KYIV_TZ.localize(naive_time)
-        
-        if new_time <= datetime.now(KYIV_TZ):
-            await message.answer("Цей час вже минув! Введи майбутню дату та час у форматі `ДД.ММ.РРРР ГГ:ХХ`:", reply_markup=get_cancel_keyboard())
-            return
-    except ValueError:
-        await message.answer("Неправильний формат! Використовуй строго `ДД.ММ.РРРР ГГ:ХХ`:", reply_markup=get_cancel_keyboard())
+    user_input = message.text.strip()
+    parsed_date = dateparser.parse(
+        user_input,
+        languages=['uk', 'ru'],
+        settings={
+            'TIMEZONE': 'Europe/Kiev',
+            'RETURN_AS_TIMEZONE_AWARE': True,
+            'PREFER_DATES_FROM': 'future'
+        }
+    )
+
+    if not parsed_date or parsed_date <= datetime.now(KYIV_TZ):
+        await message.answer("Не вдалося розпізнати час або він вже минув! Спробуй ще раз:", reply_markup=get_cancel_keyboard())
         return
 
+    new_time = parsed_date
     data = await state.get_data()
     job_id = data.get("editing_job_id")
 
@@ -391,7 +419,7 @@ async def save_edit_time(message: types.Message, state: FSMContext):
             scheduler.add_job(send_reminder, "interval", days=days_num, start_date=new_time, args=[job_id, user_id, text], id=job_id)
 
     await state.clear()
-    await message.answer(f"✅ Час нагадування успішно змінено на {new_time.strftime('%d.%m.%Y %H:%M')}!")
+    await message.answer(f"✅ Час нагадування успішно змінено на {new_time.strftime('%d.%m.%Y о %H:%M')}!")
 
 # --- ВИДАЛЕННЯ ---
 @dp.callback_query(F.data.startswith("del_"))
