@@ -4,19 +4,19 @@ import logging
 from datetime import datetime
 from aiogram import Bot, Dispatcher, types
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from aiohttp import web
 
-# Налаштування логування
 logging.basicConfig(level=logging.INFO)
 
-# Отримуємо змінні середовища з Render
 TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID", 0))
+PORT = int(os.getenv("PORT", 8080))
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
 async def send_reminder():
-    """Функція, яка надсилає нагадування"""
+    """Функція надсилання нагадування"""
     if ADMIN_ID:
         current_time = datetime.now().strftime("%H:%M:%S")
         await bot.send_message(
@@ -26,20 +26,30 @@ async def send_reminder():
 
 @dp.message(commands=["start"])
 async def start_command(message: types.Message):
-    await message.answer("Привіт! Я твій бот-нагадування. Я працюю на Render і буду надсилати повідомлення за розкладом.")
+    await message.answer("Привіт! Я твій безкоштовний бот-нагадування на Render.")
+
+# Вебсервер, щоб Render бачив живий сайт і не вимикав його
+async def handle_ping(request):
+    return web.Response(text="Bot is running!")
+
+async def start_web_server():
+    app = web.Application()
+    app.router.add_get("/", handle_ping)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", PORT)
+    await site.start()
 
 async def main():
-    # Налаштування планувальника (APScheduler)
+    # Запускаємо вебсервер для Render
+    await start_web_server()
+
+    # Планувальник нагадувань (можна змінити інтервал, наприклад: minutes=30)
     scheduler = AsyncIOScheduler()
-    
-    # ТУТ НАЛАШТОВУЄТЬСЯ РОЗКЛАД:
-    # Наприклад, нагадування кожну годину. 
-    # Можна змінити на minutes=30 або hours=2
     scheduler.add_job(send_reminder, "interval", hours=1)
-    
     scheduler.start()
     
-    # Запускаємо бота
+    # Запуск бота
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
