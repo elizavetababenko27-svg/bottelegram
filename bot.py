@@ -3,6 +3,7 @@ import asyncio
 import logging
 from datetime import datetime
 from aiogram import Bot, Dispatcher, types
+from aiogram.filters import Command
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from aiohttp import web
 
@@ -24,7 +25,7 @@ async def send_reminder():
             text=f"⏰ Час перерватись! Поточний час: {current_time}"
         )
 
-@dp.message(commands=["start"])
+@dp.message(Command("start"))
 async def start_command(message: types.Message):
     await message.answer("Привіт! Я твій безкоштовний бот-нагадування на Render.")
 
