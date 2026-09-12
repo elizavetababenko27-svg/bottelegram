@@ -18,7 +18,7 @@ known_pages = {}
 is_initialized = False
 
 last_check_time = 0
-CHECK_INTERVAL = 60  # Перевірка кожну хвилину
+CHECK_INTERVAL = 0  # Перевіряти одразу при кожному пінгу від Cron-Job.org
 
 def send_telegram_message(text):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
